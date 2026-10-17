@@ -2,5 +2,7 @@
   "version": "1.1.1",
   "source_archive": "Harvestable-Flora-Regrows-source.zip",
   "source_sha256": "574564f139c209e813c34fe86e80166e815a15ae7696db15319392f50b716064",
-  "precompiled_commonlib": "vendor/prebuilt/commonlibsse-ng-prebuilt-v12.1.0-all-msvc-cmake/lib/CommonLibSSE.lib"
+  "precompiled_commonlib": "vendor/prebuilt/commonlibsse-ng-prebuilt-v12.1.0-all-msvc-cmake/lib/CommonLibSSE.lib",
+  "precompiled_download": "CommonLibSSE.lib.xz",
+  "precompiled_sha256": "666eb00b048390e3bbb0f39865e9774c0eb8bdad21043997d9e581933b3fbba1"
 }
