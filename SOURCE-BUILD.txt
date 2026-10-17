@@ -1,0 +1,19 @@
+Source bundle cleanup
+
+Mod source, Papyrus source, configuration, build scripts, dependency source and
+license notices are retained. Precompiled mod files, release ZIPs, artwork,
+logs, vendor tests/examples/docs, and unused SkyUI assets are omitted.
+Included source files are byte-for-byte unchanged.
+
+CommonLib source builds: configure with -DBUILD_TESTS=OFF because vendor test
+fixtures are omitted. Mod-owned tests are retained.
+Build tools/compiler/SDK dependencies remain as documented in the project.
+
+The large prebuilt CommonLibSSE.lib is deliberately omitted. Before using the
+original Build-Native.ps1, obtain commonlibsse-ng-prebuilt-v12.1.0-all-msvc-cmake.zip
+from https://github.com/alandtse/CommonLibSSE-NG/releases/tag/v12.1.0
+and run ./Restore-CommonLib.ps1 -CommonLibArchive <downloaded ZIP path>.
+The helper verifies the original library SHA-256 before copying it into place.
+No download or restoration is performed during packaging. The full CommonLib
+implementation remains included under vendor/CommonLibSSE-NG for source builds.
+Compiler and Papyrus tool requirements remain as documented in Build-All.ps1.
