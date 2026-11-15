@@ -1,8 +1,12 @@
 {
-  "version": "1.1.1",
+  "version": "1.1.2",
   "source_archive": "Harvestable-Flora-Regrows-source.zip",
-  "source_sha256": "574564f139c209e813c34fe86e80166e815a15ae7696db15319392f50b716064",
+  "source_sha256": "0b856e8d2e87a8c142d8f62253b38779c53d318b938cbca78a850e6adb3c36bc",
   "precompiled_commonlib": "vendor/prebuilt/commonlibsse-ng-prebuilt-v12.1.0-all-msvc-cmake/lib/CommonLibSSE.lib",
   "precompiled_download": "CommonLibSSE.lib.xz",
-  "precompiled_sha256": "666eb00b048390e3bbb0f39865e9774c0eb8bdad21043997d9e581933b3fbba1"
+  "precompiled_sha256": "666eb00b048390e3bbb0f39865e9774c0eb8bdad21043997d9e581933b3fbba1",
+  "runtime_archive": "Harvestable-Flora-Regrows-v1.1.2.zip",
+  "runtime_sha256": "7a2309844ebca321a836a06278e1e2d1a12bc8d55169d4d41583611fe5a0be07",
+  "gameplay_tested": false,
+  "save_load_code_unchanged": true
 }

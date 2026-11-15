@@ -51,9 +51,14 @@ namespace HFR {
  std::unordered_map<RE::FormID,double> deadlines;
  std::unordered_set<RE::FormID> loaded;
  std::deque<RE::FormID> roundRobin;
+ std::unordered_set<RE::FormID> pendingLoads;
+ std::deque<RE::FormID> scanCells;
+ std::unordered_map<RE::FormID,std::chrono::steady_clock::time_point> inFlight;
+ std::chrono::steady_clock::time_point lastMilk{};
  std::mt19937 random{std::random_device{}()};
  std::atomic<bool> ready{false};
  std::atomic<bool> tickQueued{false};
+ std::atomic<std::uint64_t> session{0};
  std::jthread scheduler;
  std::chrono::steady_clock::time_point lastScan{},lastLog{};
  constexpr std::uint32_t recordType=0x54494D52;
@@ -101,9 +106,10 @@ namespace HFR {
  void Completed(RE::StaticFunctionTag*,RE::TESObjectREFR* ref){
   if(!ref)return;
   std::lock_guard lock(mutex);
+  inFlight.erase(ref->GetFormID());
   if(!Harvested(ref)){
    deadlines.erase(ref->GetFormID());
-   SKSE::log::info("Regrew plant {:08X}",ref->GetFormID());
+   SKSE::log::debug("Regrew plant {:08X}",ref->GetFormID());
   }else SKSE::log::warn("Plant {:08X} still harvested after SetHarvested",ref->GetFormID());
  }
  void Inspect(RE::StaticFunctionTag*) {
@@ -182,24 +188,36 @@ namespace HFR {
   vm->RegisterFunction("GetMinimum","HFR_Native",GetMinimum);vm->RegisterFunction("GetMaximum","HFR_Native",GetMaximum);
   vm->RegisterFunction("SetMinimum","HFR_Native",SetMinimum);vm->RegisterFunction("SetMaximum","HFR_Native",SetMaximum);return true;
  }
- void RequestRegrow(RE::TESObjectREFR* ref){
-  auto* vm=RE::BSScript::Internal::VirtualMachine::GetSingleton();if(!vm)return;
+ bool RequestRegrow(RE::TESObjectREFR* ref){
+  auto* vm=RE::BSScript::Internal::VirtualMachine::GetSingleton();if(!vm)return false;
+  const auto id=ref->GetFormID();
+  {std::lock_guard lock(mutex);const auto now=std::chrono::steady_clock::now();auto it=inFlight.find(id);if(it!=inFlight.end()&&now-it->second<std::chrono::seconds(10))return false;inFlight[id]=now;}
   auto* args=RE::MakeFunctionArguments(static_cast<RE::TESObjectREFR*>(ref));
   RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
-  SKSE::log::info("Request regrowth {:08X} at game day {}",ref->GetFormID(),Now());
-  if(!vm->DispatchStaticCall("HFR_Worker","Regrow",args,callback))SKSE::log::warn("Regrowth dispatch rejected for {:08X}",ref->GetFormID());
+  SKSE::log::debug("Request regrowth {:08X} at game day {}",id,Now());
+  if(!vm->DispatchStaticCall("HFR_Worker","Regrow",args,callback)){std::lock_guard lock(mutex);inFlight.erase(id);SKSE::log::warn("Regrowth dispatch rejected for {:08X}",id);return false;}
+  return true;
+ }
+ void QueueScan(){
+  if(auto* world=RE::TES::GetSingleton())world->ForEachCell([](RE::TESObjectCELL* cell){if(cell&&cell->IsAttached())scanCells.push_back(cell->GetFormID());});
  }
  void Tick(){
   if(!ready)return;
   auto* ui=RE::UI::GetSingleton();if(!ui || ui->GameIsPaused())return;
   const auto realNow=std::chrono::steady_clock::now();
-  if(realNow-lastScan>=std::chrono::seconds(10)){
+  if(scanCells.empty()&&realNow-lastScan>=std::chrono::seconds(60)){
    lastScan=realNow;
-   if(auto* world=RE::TES::GetSingleton())world->ForEachReference([](RE::TESObjectREFR* ref){if(ref)Track(ref->GetFormID());return RE::BSContainer::ForEachResult::kContinue;});
+   QueueScan();
   }
+  // Object-load events are coalesced instead of submitting a task per object.
+  std::vector<RE::FormID> arrivals;
+  {std::lock_guard lock(mutex);for(auto it=pendingLoads.begin();it!=pendingLoads.end()&&arrivals.size()<128;){arrivals.push_back(*it);it=pendingLoads.erase(it);}std::erase_if(inFlight,[&](const auto& entry){return realNow-entry.second>=std::chrono::seconds(10);});}
+  for(auto id:arrivals)Track(id);
+  // Recovery scans inspect only one attached cell per update, never the whole world at once.
+  if(!scanCells.empty()){auto id=scanCells.front();scanCells.pop_front();if(auto* cell=RE::TESForm::LookupByID<RE::TESObjectCELL>(id);cell&&cell->IsAttached())cell->ForEachReference([](RE::TESObjectREFR* ref){if(ref)Track(ref->GetFormID());return RE::BSContainer::ForEachResult::kContinue;});}
   const double now=Now();if(!std::isfinite(now))return;
-  TickMilk(now);
-  std::size_t count;{std::lock_guard lock(mutex);count=std::min<std::size_t>(roundRobin.size(),256);}
+  if(realNow-lastMilk>=std::chrono::seconds(2)){lastMilk=realNow;TickMilk(now);}
+  std::size_t count;{std::lock_guard lock(mutex);count=std::min<std::size_t>(roundRobin.size(),32);}
   unsigned restores=0;
   for(std::size_t i=0;i<count;i++){
    RE::FormID id;
@@ -218,11 +236,11 @@ namespace HFR {
      const int offset=kind==1 ? 1 : 4;
      const double dueAt=FeatureDeadline(now,minimum,maximum,kind!=0 && options[offset+1]!=0,kind!=0 ? options[offset+2] : minimum,roll);
      deadlines.emplace(id,dueAt);
-     SKSE::log::info("Timer assigned {:08X}: day {} -> {}",id,now,dueAt);
+     SKSE::log::debug("Timer assigned {:08X}: day {} -> {}",id,now,dueAt);
     }else due=now>=it->second;
    }
    // Keep the deadline until the game confirms the harvested flag was cleared.
-   if(due && restores<16){RequestRegrow(ref);restores++;}
+   if(due && restores<2&&RequestRegrow(ref))restores++;
   }
   if(realNow-lastLog>=std::chrono::seconds(30)){
    lastLog=realNow;std::lock_guard lock(mutex);
@@ -232,7 +250,7 @@ namespace HFR {
  }
  class Events final:public RE::BSTEventSink<RE::TESObjectLoadedEvent>{
   RE::BSEventNotifyControl ProcessEvent(const RE::TESObjectLoadedEvent* e,RE::BSTEventSource<RE::TESObjectLoadedEvent>*) override{
-   if(e){const auto id=e->formID;if(e->loaded)SKSE::GetTaskInterface()->AddTask([id]{Track(id);});// Unloaded entries are removed when their queue slot is visited, avoiding duplicate queue entries on rapid reload.
+   if(e){std::lock_guard lock(mutex);if(e->loaded)pendingLoads.insert(e->formID);else pendingLoads.erase(e->formID);// Unloaded entries are removed when their queue slot is visited, avoiding duplicate queue entries on rapid reload.
    }
    return RE::BSEventNotifyControl::kContinue;
   }
@@ -240,15 +258,15 @@ namespace HFR {
  void BeginScheduler(){
   scheduler=std::jthread([](std::stop_token stop){
    while(!stop.stop_requested()){
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
     if(!ready || tickQueued.exchange(true))continue;
-    SKSE::GetTaskInterface()->AddTask([]{tickQueued=false;Tick();});
+    const auto generation=session.load();
+    SKSE::GetTaskInterface()->AddTask([generation]{if(session!=generation)return;tickQueued=false;Tick();});
     // Time checks and all reference access run only on the game main thread.
-    for(int i=0;i<3 && !stop.stop_requested();i++)std::this_thread::sleep_for(std::chrono::milliseconds(500));
    }
   });
  }
- void Reset(SKSE::SerializationInterface*){std::lock_guard lock(mutex);ready=false;deadlines.clear();loaded.clear();roundRobin.clear();milkDeadlines.clear();legacyMilk.clear();milkInitialized=false;milkCursor=0;}
+ void Reset(SKSE::SerializationInterface*){std::lock_guard lock(mutex);ready=false;++session;tickQueued=false;pendingLoads.clear();scanCells.clear();inFlight.clear();lastMilk={};deadlines.clear();loaded.clear();roundRobin.clear();milkDeadlines.clear();legacyMilk.clear();milkInitialized=false;milkCursor=0;}
  void Save(SKSE::SerializationInterface* s){
   std::lock_guard lock(mutex);
   auto writeTimers=[&](auto type,const auto& timers){if(s->OpenRecord(type,1))for(const auto& [id,due]:timers){if(!s->WriteRecordData(id)||!s->WriteRecordData(due))break;}};
@@ -271,19 +289,21 @@ namespace HFR {
   }
  }
  void Start(){
-  SKSE::GetTaskInterface()->AddTask([]{
+  const auto generation=session.load();
+  SKSE::GetTaskInterface()->AddTask([generation]{
+   if(session!=generation)return;
    {std::lock_guard lock(mutex);loaded.clear();roundRobin.clear();}
-   if(auto* world=RE::TES::GetSingleton())world->ForEachReference([](RE::TESObjectREFR* ref){if(ref)Track(ref->GetFormID());return RE::BSContainer::ForEachResult::kContinue;});
+   scanCells.clear();QueueScan();
    TickMilk(Now());
-   ready=true;lastScan={};lastLog={};SKSE::log::info("Regrowth tracking started; {} persisted plants, {} loaded plants",deadlines.size(),loaded.size());
+   ready=true;lastScan=std::chrono::steady_clock::now();lastMilk=lastScan;lastLog={};SKSE::log::info("Regrowth tracking started; {} persisted plants; {} cells queued for incremental discovery",deadlines.size(),scanCells.size());
    spdlog::default_logger()->flush();
   });
  }
 }
 extern "C" __declspec(dllexport) constinit SKSE::PluginVersionData SKSEPlugin_Version=[]{
- SKSE::PluginVersionData d;d.PluginVersion({1,1,1,0});d.PluginName("HarvestableFloraRegrows");d.AuthorName("Max");d.UsesAddressLibrary();d.UsesNoStructs();return d;
+ SKSE::PluginVersionData d;d.PluginVersion({1,1,2,0});d.PluginName("HarvestableFloraRegrows");d.AuthorName("Max");d.UsesAddressLibrary();d.UsesNoStructs();return d;
 }();
-extern "C" __declspec(dllexport) bool SKSEPlugin_Query(const SKSE::QueryInterface* s,SKSE::PluginInfo* i){i->infoVersion=SKSE::PluginInfo::kVersion;i->name="HarvestableFloraRegrows";i->version=REL::Version(1,1,1,0).pack();return !s->IsEditor() && s->RuntimeVersion()>=REL::Version(1,5,97,0);}
+extern "C" __declspec(dllexport) bool SKSEPlugin_Query(const SKSE::QueryInterface* s,SKSE::PluginInfo* i){i->infoVersion=SKSE::PluginInfo::kVersion;i->name="HarvestableFloraRegrows";i->version=REL::Version(1,1,2,0).pack();return !s->IsEditor() && s->RuntimeVersion()>=REL::Version(1,5,97,0);}
 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSE::LoadInterface* skse){
  SKSE::Init(skse);
  static HANDLE instance;auto name=L"Local\\HarvestableFloraRegrows."+std::to_wstring(GetCurrentProcessId());instance=CreateMutexW(nullptr,FALSE,name.c_str());

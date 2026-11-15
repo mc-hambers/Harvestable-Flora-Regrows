@@ -1,0 +1,19 @@
+{
+  "gameplay_tested": false,
+  "measured_frame_time_improvement": false,
+  "save_load_functions_unchanged": true,
+  "pickpocket_behavior_checks": 140698,
+  "flora_timer_checks": 3897,
+  "runtime_hook_fixture_checks": 15,
+  "Pickpocket-Chance-Rework-v1.1.1.zip": {
+    "sha256": "dbd8086d297855fb4410e0b0209199c81144a0607d35cc2b7755bb26fd407d7f",
+    "bytes": 520433
+  },
+  "Harvestable-Flora-Regrows-v1.1.2.zip": {
+    "sha256": "7a2309844ebca321a836a06278e1e2d1a12bc8d55169d4d41583611fe5a0be07",
+    "bytes": 332831
+  },
+  "version": "1.1.2",
+  "source_matches_built_plugin": true,
+  "live_gameplay_tested": false
+}
